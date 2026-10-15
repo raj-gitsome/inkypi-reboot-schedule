@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reboot Schedule</title>
+    <script>
+        (function() {
+            const theme = localStorage.getItem('inkypi-theme') ||
+                         (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            if (theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
+        })();
+    </script>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static',filename='styles/main.css') }}">
+    <script src="{{ url_for('static', filename='scripts/dark_mode.js') }}"></script>
+    <script src="{{ url_for('static', filename='scripts/response_modal.js') }}"></script>
+    <style>
+        .status-card {
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 14px 18px;
+            margin-bottom: 22px;
+            background: var(--bg-secondary);
+        }
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 6px 0;
+            flex-wrap: wrap;
+        }
+        .status-row + .status-row { border-top: 1px solid var(--border-color); }
+        .status-label { color: var(--text-secondary); }
+        .status-value { font-weight: 600; text-align: right; margin-left: auto; color: var(--text-primary); }
+        .status-problem {
+            margin-top: 10px;
+            color: var(--accent-warn);
+            font-weight: 600;
+        }
+        .day-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+        .day-picker input { display: none; }
+        .day-picker label {
+            min-width: 52px;
+            text-align: center;
+            padding: 8px 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            cursor: pointer;
+            user-select: none;
+            color: var(--text-primary);
+        }
+        .day-picker input:checked + label {
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+            color: #fff;
+        }
+        .schedule-fields.disabled { opacity: 0.45; pointer-events: none; }
+        .hint { color: var(--text-secondary); font-size: 0.9em; line-height: 1.45; }
+        .day-of-month { max-width: 90px; }
+        .time-input { max-width: 160px; }
+    </style>
+</head>
+<body>
+    <div class="frame">
+        <button onclick="history.back()" class="back-button">← Back</button>
+        <div class="app-header">
+            <div class="header-content">
+                <div class="title-container">
+                    <img src="{{ url_for('static', filename='icons/reboot_schedule.png') }}" alt="reboot schedule icon" class="app-icon">
+                    <h1 class="app-title">Reboot Schedule</h1>
+                </div>
+            </div>
+        </div>
+        <div class="separator"></div>
+
+        <div class="status-card">
+            <div class="status-row">
+                <span class="status-label">Schedule</span>
+                <span class="status-value" id="statusSummary">{{ status.summary }}</span>
+            </div>
+            <div class="status-row" id="nextRow" {% if not status.next_reboot %}style="display:none"{% endif %}>
+                <span class="status-label">Next reboot</span>
+                <span class="status-value" id="statusNext">{{ status.next_reboot or '' }}</span>
+            </div>
+            <div class="status-row">
+                <span class="status-label">Running since</span>
+                <span class="status-value">{{ status.running_since }}</span>
+            </div>
+            <div class="status-problem" id="statusProblem" {% if not status.problem %}style="display:none"{% endif %}>{{ status.problem or '' }}</div>
+        </div>
+
+        <form class="settings-form" id="scheduleForm" onsubmit="return false;">
+            <div class="form-group nowrap">
+                <label class="form-label" for="enabled">Scheduled Reboots</label>
+                <div class="toggle-container">
+                    <input type="checkbox" id="enabled" class="toggle-checkbox" {% if schedule.enabled %}checked{% endif %}>
+                    <label for="enabled" class="toggle-label"></label>
+                </div>
+            </div>
+
+            <div class="schedule-fields" id="scheduleFields">
+                <div class="form-group nowrap">
+                    <label for="frequency" class="form-label">Repeat:</label>
+                    <select id="frequency" class="form-input">
+                        <option value="daily">Every day</option>
+                        <option value="weekly">On certain days of the week</option>
+                        <option value="monthly">Once a month</option>
+                    </select>
+                </div>
+
+                <div class="form-group" id="daysGroup">
+                    <label class="form-label">Days:</label>
+                    <div class="day-picker">
+                        {% for d in weekdays %}
+                        <input type="checkbox" id="day-{{ d }}" value="{{ d }}" {% if d in schedule.days %}checked{% endif %}>
+                        <label for="day-{{ d }}">{{ d }}</label>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="form-group nowrap" id="dayOfMonthGroup">
+                    <label for="dayOfMonth" class="form-label">Day of month:</label>
+                    <input type="number" id="dayOfMonth" class="form-input day-of-month" min="1" max="28" value="{{ schedule.day_of_month }}">
+                </div>
+
+                <div class="form-group nowrap">
+                    <label for="time" class="form-label">Time:</label>
+                    <input type="time" id="time" class="form-input time-input" value="{{ schedule.time }}" required>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <p class="hint">
+                    Times use your InkyPi time zone, <strong>{{ timezone }}</strong>. If you change the time zone in
+                    Settings, save this page again. Days of the month stop at 28 so the reboot runs every month.
+                    The Pi skips a scheduled reboot if it started less than 10 minutes earlier, and it doesn't make up
+                    a reboot it missed while it was turned off.
+                </p>
+            </div>
+        </form>
+
+        <div class="buttons-container">
+            <button type="button" onclick="saveSchedule()" class="action-button">Save</button>
+        </div>
+    </div>
+    {% include 'response_modal.html' %}
+
+    <script>
+        const enabledBox = document.getElementById('enabled');
+        const frequency = document.getElementById('frequency');
+        frequency.value = {{ schedule.frequency | tojson }};
+
+        function updateVisibility() {
+            document.getElementById('scheduleFields').classList.toggle('disabled', !enabledBox.checked);
+            document.getElementById('daysGroup').style.display = frequency.value === 'weekly' ? '' : 'none';
+            document.getElementById('dayOfMonthGroup').style.display = frequency.value === 'monthly' ? '' : 'none';
+        }
+        enabledBox.addEventListener('change', updateVisibility);
+        frequency.addEventListener('change', updateVisibility);
+        updateVisibility();
+
+        function showStatus(status) {
+            document.getElementById('statusSummary').textContent = status.summary;
+            const nextRow = document.getElementById('nextRow');
+            nextRow.style.display = status.next_reboot ? '' : 'none';
+            document.getElementById('statusNext').textContent = status.next_reboot || '';
+            const problem = document.getElementById('statusProblem');
+            problem.style.display = status.problem ? '' : 'none';
+            problem.textContent = status.problem || '';
+        }
+
+        async function saveSchedule() {
+            const payload = {
+                enabled: enabledBox.checked,
+                frequency: frequency.value,
+                days: [...document.querySelectorAll('.day-picker input:checked')].map(el => el.value),
+                day_of_month: document.getElementById('dayOfMonth').value,
+                time: document.getElementById('time').value,
+            };
+            try {
+                const response = await fetch("{{ url_for('reboot_schedule.save_reboot_schedule') }}", {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                const result = await response.json();
+                if (response.ok) {
+                    showStatus(result.status);
+                    showResponseModal('success', `Success! ${result.message}`);
+                } else {
+                    showResponseModal('failure', `Error! ${result.error}`);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                showResponseModal('failure', 'Error! Could not reach InkyPi.');
+            }
+        }
+    </script>
+</body>
+</html>
