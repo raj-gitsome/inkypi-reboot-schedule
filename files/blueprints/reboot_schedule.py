@@ -149,20 +149,92 @@ def validate_schedule(data):
 
 def build_on_calendar(schedule, timezone):
     hh_mm = f"{schedule['time']}:00"
-    if schedule["frequency"] == "daily":
+    if schedule["frequency"] == "daily" or (schedule["frequency"] == "weekly" and len(schedule["days"]) == 7):
         expr = f"*-*-* {hh_mm}"
     elif schedule["frequency"] == "weekly":
         expr = f"{','.join(schedule['days'])} *-*-* {hh_mm}"
     else:
         expr = f"*-*-{schedule['day_of_month']:02d} {hh_mm}"
-    return f"{expr} {timezone}"
+    return f"{expr} {system_timezone_name(timezone)}"
+
+
+# Old alias names (US/Eastern etc.) that newer Debian/Raspberry Pi OS only ships in the
+# optional tzdata-legacy package, mapped to the current name of the same zone.
+TZ_ALIASES = {
+    "US/Eastern": "America/New_York", "US/Central": "America/Chicago",
+    "US/Mountain": "America/Denver", "US/Pacific": "America/Los_Angeles",
+    "US/Alaska": "America/Anchorage", "US/Hawaii": "Pacific/Honolulu",
+    "US/Arizona": "America/Phoenix", "US/East-Indiana": "America/Indiana/Indianapolis",
+    "US/Michigan": "America/Detroit", "US/Aleutian": "America/Adak",
+    "US/Samoa": "Pacific/Pago_Pago", "Canada/Eastern": "America/Toronto",
+    "Canada/Central": "America/Winnipeg", "Canada/Mountain": "America/Edmonton",
+    "Canada/Pacific": "America/Vancouver", "Canada/Atlantic": "America/Halifax",
+    "Canada/Newfoundland": "America/St_Johns", "Canada/Saskatchewan": "America/Regina",
+    "Brazil/East": "America/Sao_Paulo", "Mexico/General": "America/Mexico_City",
+    "Chile/Continental": "America/Santiago", "GB": "Europe/London",
+    "Australia/NSW": "Australia/Sydney", "Australia/Victoria": "Australia/Melbourne",
+    "Australia/Queensland": "Australia/Brisbane", "Australia/West": "Australia/Perth",
+    "Asia/Calcutta": "Asia/Kolkata", "Asia/Saigon": "Asia/Ho_Chi_Minh",
+    "Asia/Katmandu": "Asia/Kathmandu", "Asia/Rangoon": "Asia/Yangon",
+    "Europe/Kiev": "Europe/Kyiv", "Japan": "Asia/Tokyo", "Singapore": "Asia/Singapore",
+}
+ZONEINFO = "/usr/share/zoneinfo"
+
+
+def system_timezone_name(name):
+    """Return a name for `name`'s time zone that this system's systemd accepts."""
+    if os.path.isfile(os.path.join(ZONEINFO, name)):
+        return name
+    alias = TZ_ALIASES.get(name)
+    if alias and os.path.isfile(os.path.join(ZONEINFO, alias)):
+        return alias
+    match = find_equivalent_zone(name)
+    if match:
+        return match
+    raise ScheduleError(f"This Pi doesn't recognize the time zone '{name}'. "
+                        "Pick a city-based time zone (e.g. America/New_York) in Settings, then save again.")
+
+
+def find_equivalent_zone(name):
+    """Find a zone installed on this system with the same rules as `name` (per pytz)."""
+    try:
+        target = pytz.timezone(name)
+    except pytz.UnknownTimeZoneError:
+        return None
+    candidates = []
+    for table in ("zone1970.tab", "zone.tab"):
+        try:
+            with open(os.path.join(ZONEINFO, table)) as f:
+                candidates += [line.split("\t")[2].strip() for line in f
+                               if line.strip() and not line.startswith("#")]
+        except (OSError, IndexError):
+            continue
+    probes = [datetime(y, m, 15, 12) for y in range(2024, 2036) for m in range(1, 13)]
+
+    def offsets(tz):
+        return [tz.utcoffset(p, is_dst=False) for p in probes]
+
+    want = offsets(target)
+    for cand in dict.fromkeys(candidates):
+        if not os.path.isfile(os.path.join(ZONEINFO, cand)):
+            continue
+        try:
+            tz = pytz.timezone(cand)
+        except pytz.UnknownTimeZoneError:
+            continue
+        if offsets(tz) == want and getattr(tz, "_utc_transition_times", None) is not None:
+            # also require the same DST switch moments in recent years
+            recent = lambda z: [t for t in getattr(z, "_utc_transition_times", []) if t.year >= 2024]
+            if recent(tz) == recent(target):
+                return cand
+    return None
 
 
 def describe(schedule, twelve_hour=True):
     t = schedule["time"]
     if twelve_hour:
         t = datetime.strptime(t, "%H:%M").strftime("%-I:%M %p")
-    if schedule["frequency"] == "daily":
+    if schedule["frequency"] == "daily" or len(schedule["days"]) == 7:
         return f"Every day at {t}"
     if schedule["frequency"] == "weekly":
         return f"Every {', '.join(schedule['days'])} at {t}"
